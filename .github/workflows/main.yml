@@ -24,6 +24,319 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
+      - name: Accept Android SDK Licenses
+        run: |
+          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+      - name: Prepare or Generate Android Project
+        run: |
+          set -e
+
+          # If a project zip was uploaded, extract it
+          if [ ! -f "settings.gradle.kts" ]; then
+            ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1 || true)
+            if [ -n "$ZIP_FILE" ]; then
+              unzip -o "$ZIP_FILE" -d .
+            fi
+          fi
+
+          # If project files are inside a subfolder, move them to root
+          if [ ! -f "settings.gradle.kts" ]; then
+            SUB_SETTINGS=$(find . -maxdepth 3 -name "settings.gradle.kts" | head -n 1 || true)
+            if [ -n "$SUB_SETTINGS" ]; then
+              cp -r "$(dirname "$SUB_SETTINGS")"/. .
+            fi
+          fi
+
+          # If only an HTML game file was uploaded, generate the full Android project automatically
+          if [ ! -f "app/build.gradle.kts" ]; then
+            HTML_FILE=$(find . -maxdepth 3 -type f \( -iname "*.html" -o -iname "*.htm" \) ! -path "./.git/*" ! -path "./app/*" | head -n 1 || true)
+            if [ -z "$HTML_FILE" ]; then
+              echo "::error::No .html game file found in repository. Upload basketball.html to the root of your repo."
+              exit 1
+            fi
+
+            echo "Packaging HTML game: $HTML_FILE"
+            mkdir -p app/src/main/assets
+            mkdir -p app/src/main/java/com/hoops5v5/offline
+            mkdir -p app/src/main/res/values
+            mkdir -p app/src/main/res/mipmap-xxxhdpi
+            cp "$HTML_FILE" app/src/main/assets/index.html
+
+            cat <<'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google {
+                      content {
+                          includeGroupByRegex("com\\.android.*")
+                          includeGroupByRegex("com\\.google.*")
+                          includeGroupByRegex("androidx.*")
+                      }
+                  }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Hoops5v5"
+          include(":app")
+          EOF
+
+            cat <<'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+          }
+          EOF
+
+            cat <<'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          EOF
+
+            touch app/proguard-rules.pro
+
+            cat <<'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.hoops5v5.offline"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.hoops5v5.offline"
+                  minSdk = 24
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.15.0")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("androidx.webkit:webkit:1.12.1")
+          }
+          EOF
+
+            cat <<'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:allowBackup="true"
+                  android:hardwareAccelerated="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.OfflineGame">
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:screenOrientation="sensorLandscape">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+            cat <<'EOF' > app/src/main/res/values/strings.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Hoops 5v5</string>
+          </resources>
+          EOF
+
+            cat <<'EOF' > app/src/main/res/values/themes.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.OfflineGame" parent="Theme.AppCompat.DayNight.NoActionBar">
+                  <item name="android:windowBackground">#0F172A</item>
+                  <item name="android:statusBarColor">#0F172A</item>
+                  <item name="android:navigationBarColor">#0F172A</item>
+                  <item name="android:windowFullscreen">true</item>
+              </style>
+          </resources>
+          EOF
+
+            cat <<'EOF' > app/src/main/java/com/hoops5v5/offline/MainActivity.kt
+          package com.hoops5v5.offline
+
+          import android.annotation.SuppressLint
+          import android.graphics.Color
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.View
+          import android.view.WindowManager
+          import android.webkit.WebChromeClient
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebResourceResponse
+          import android.webkit.WebSettings
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import androidx.activity.OnBackPressedCallback
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+          import androidx.webkit.WebViewAssetLoader
+          import java.io.ByteArrayInputStream
+
+          class MainActivity : AppCompatActivity() {
+              private lateinit var webView: WebView
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+                  val assetLoader = WebViewAssetLoader.Builder()
+                      .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+                      .build()
+
+                  webView = WebView(this).apply {
+                      setBackgroundColor(Color.parseColor("#0F172A"))
+                      overScrollMode = View.OVER_SCROLL_NEVER
+                      isVerticalScrollBarEnabled = false
+                      isHorizontalScrollBarEnabled = false
+                      setLayerType(View.LAYER_TYPE_HARDWARE, null)
+
+                      settings.apply {
+                          javaScriptEnabled = true
+                          domStorageEnabled = true
+                          databaseEnabled = true
+                          mediaPlaybackRequiresUserGesture = false
+                          useWideViewPort = true
+                          loadWithOverviewMode = true
+                          allowFileAccess = true
+                          allowContentAccess = true
+                          cacheMode = WebSettings.LOAD_NO_CACHE
+                          setSupportZoom(false)
+                          builtInZoomControls = false
+                          displayZoomControls = false
+                      }
+
+                      webViewClient = object : WebViewClient() {
+                          override fun shouldInterceptRequest(
+                              view: WebView,
+                              request: WebResourceRequest
+                          ): WebResourceResponse? {
+                              val assetResponse = assetLoader.shouldInterceptRequest(request.url)
+                              if (assetResponse != null) return assetResponse
+                              return WebResourceResponse(
+                                  "text/plain",
+                                  "utf-8",
+                                  403,
+                                  "Offline Mode",
+                                  emptyMap(),
+                                  ByteArrayInputStream(ByteArray(0))
+                              )
+                          }
+                      }
+
+                      webChromeClient = WebChromeClient()
+                  }
+
+                  setContentView(webView)
+                  applyImmersiveFullscreen()
+
+                  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                      override fun handleOnBackPressed() {
+                          if (webView.canGoBack()) webView.goBack() else finish()
+                      }
+                  })
+
+                  if (savedInstanceState == null) {
+                      webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+                  } else {
+                      webView.restoreState(savedInstanceState)
+                  }
+              }
+
+              private fun applyImmersiveFullscreen() {
+                  WindowCompat.setDecorFitsSystemWindows(window, false)
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                      window.attributes.layoutInDisplayCutoutMode =
+                          WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                  }
+                  val controller = WindowInsetsControllerCompat(window, window.decorView)
+                  controller.hide(WindowInsetsCompat.Type.systemBars())
+                  controller.systemBarsBehavior =
+                      WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus) applyImmersiveFullscreen()
+              }
+
+              override fun onSaveInstanceState(outState: Bundle) {
+                  super.onSaveInstanceState(outState)
+                  webView.saveState(outState)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  webView.onResume()
+                  webView.resumeTimers()
+              }
+
+              override fun onPause() {
+                  webView.onPause()
+                  webView.pauseTimers()
+                  super.onPause()
+              }
+
+              override fun onDestroy() {
+                  webView.destroy()
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+            python3 - <<'PY'
+          import struct, zlib, math
+          s = 192
+          rows = []
+          for y in range(s):
+              row = bytearray([0])
+              for x in range(s):
+                  dx, dy = x + 0.5 - s/2, y + 0.5 - s/2
+                  d = math.hypot(dx, dy)
+                  r, g, b = (234, 88, 12) if d <= s*0.36 else (15, 23, 42)
+                  if d <= s*0.36 and (abs(dx) < 3 or abs(dy) < 3):
+                      r, g, b = (15, 23, 42)
+                  row.extend((r, g, b, 255))
+              rows.append(bytes(row))
+          def ck(t, data):
+              return struct.pack('>I', len(data)) + t + data + struct.pack('>I', zlib.crc32(t + data) & 0xffffffff)
+          ihdr = struct.pack('>IIBBBBB', s, s, 8, 6, 0, 0, 0)
+          png = b'\x89PNG\r\n\x1a\n' + ck(b'IHDR', ihdr) + ck(b'IDAT', zlib.compress(b''.join(rows))) + ck(b'IEND', b'')
+          open('app/src/main/res/mipmap-xxxhdpi/ic_launcher.png', 'wb').write(png)
+          PY
+          fi
+
       - name: Assemble Debug APK
         run: gradle assembleDebug --no-daemon
 
